@@ -73,11 +73,13 @@ class PolygonExtractor:
 
 
 	def run_SAM_on_image(self, save_masks=True):
+		PolygonExtractor.clean_cache()
+		
 		PolygonExtractor.normalize_to_uint8_per_band(self.image_path, export=True, export_path=self.norm_img_path)
 		self.tiles = PolygonExtractor.split_image_into_nine_with_overlap(self.norm_img_path, overlap_fraction=0.2)
 
 		for position in self.tile_windows:
-			PolygonExtractor.clean_cache()
+			
 			current_image = np.transpose(self.tiles[position]['image'], (1,2,0))
 
 			with torch.no_grad():
@@ -96,7 +98,9 @@ class PolygonExtractor:
 					use_m2m=True,
 				)
 
-				mask_table = sam2.generate(current_image, output=f"./Temporary_Data/masks_{position}.tif")
+				mask_table = sam2.generate(current_image)
+
+				PolygonExtractor.clean_cache()
 			
 			mask_gdf = self.masks_to_shapes(mask_table, position)
 
@@ -107,7 +111,12 @@ class PolygonExtractor:
 			else:
 				final_gdf = pd.concat([final_gdf, mask_gdf], ignore_index=True)
 
+			PolygonExtractor.clean_cache()
+
 		print(f"Total polygons before deduplication: {len(final_gdf)}")
+
+		with open(f"{self.fire_name}_{self.pic_number}_polygons.pkl", "wb") as f:
+			pickle.dump(final_gdf, f)
 
 		return final_gdf
 
@@ -204,9 +213,6 @@ class PolygonExtractor:
 
 
 		gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs=None)
-
-		with open(f"{self.fire_name}_{self.pic_number}_polygons.pkl", "wb") as f:
-			pickle.dump(gdf, f)
 
 		return gdf
             
@@ -402,10 +408,13 @@ class PolygonExtractor:
 		plt.tight_layout(); plt.show()
 
 	@staticmethod
-	def clean_cache():
-		gc.collect()  
+	def clean_cache(): 
 		if torch.cuda.is_available():
+			print(f"CUDA memory allocated: {torch.cuda.memory_allocated()/(1024**3):.2f} GB")
 			torch.cuda.empty_cache()  
+			gc.collect()
+			print(f"CUDA memory allocated after emptying cache: {torch.cuda.memory_allocated()/(1024**3):.2f} GB")
+		
 
 	@staticmethod
 	def normalize_to_uint8_per_band(image_path, export=False, export_path="norm_img.tif"):
