@@ -85,6 +85,8 @@ class PolygonExtractor:
 			else:
 				final_gdf = pd.concat([final_gdf, mask_gdf], ignore_index=True)
 
+		print(f"Total polygons before deduplication: {len(final_gdf)}")
+
 		return final_gdf
 
 
@@ -111,7 +113,7 @@ class PolygonExtractor:
 				#print(f"Mask {i} is empty, skipping...")
 				continue
 
-			if mask_dict[i]["area"] < self.mask_skip_threshold:
+			if mask_dict[i]["area"] < self.mask_size_threshold:
 				#print(f"Mask {i} is too small, skipping...")
 				continue
 
@@ -486,7 +488,7 @@ if __name__ == "__main__":
 	pre_image_f = f"../fires/{fire_name}/images/{fire_name}-wildfire_0000{pic_number}_pre_disaster.tif"
 	post_image_f = f"../fires/{fire_name}/images/{fire_name}-wildfire_0000{pic_number}_post_disaster.tif"
 	
-	extractor = PolygonExtractor(pre_image_f, mask_size_threshold=20, mask_min_hole_area=10, fire_name=fire_name, pic_number=pic_number)
+	extractor = PolygonExtractor(pre_image_f, mask_size_threshold=10, mask_min_hole_area=10, fire_name=fire_name, pic_number=pic_number)
 	gdf = extractor.run_SAM_on_image()
 
 	extractor.show_gdf_in_pixel_space(gdf)
