@@ -29,8 +29,9 @@ import sys
 import pickle
 
 class PolygonExtractor:
-	def __init__(self, image_path, mask_size_threshold=10, mask_min_hole_area=10):
+	def __init__(self, image_path, mask_size_threshold=10, mask_min_hole_area=10, fire_name=None, pic_number=None):
 		self.image_path = image_path
+		self.norm_img_path = f"{fire_name}_{pic_number}_norm_img.tif"
 		self.tile_windows = [
             "top_left",
             "top_center",
@@ -45,11 +46,13 @@ class PolygonExtractor:
 		self.tiles = None
 		self.mask_size_threshold = mask_size_threshold
 		self.mask_min_hole_area = mask_min_hole_area
+		self.fire_name = fire_name
+		self.pic_number = pic_number
 
 
-	def run_SAM_on_image(self):
-		norm_img = PolygonExtractor.normalize_to_uint8_per_band(self.image_path)
-		self.tiles = PolygonExtractor.split_image_into_nine_with_overlap(norm_img, overlap_fraction=0.2)
+	def run_SAM_on_image(self, save_masks=True):
+		PolygonExtractor.normalize_to_uint8_per_band(self.image_path, export=True, export_path=self.norm_img_path)
+		self.tiles = PolygonExtractor.split_image_into_nine_with_overlap(self.norm_img_path, overlap_fraction=0.2)
 
 		for position in self.tile_windows:
 			PolygonExtractor.clean_cache()
@@ -74,6 +77,9 @@ class PolygonExtractor:
 				mask_table = sam2.generate(current_image, output=f"./Temporary_Data/masks_{position}.tif")
 			
 			mask_gdf = self.masks_to_shapes(mask_table, position)
+
+			print(f"Position: {position} extraction completed, Masks kept: {len(mask_gdf)}/{len(mask_table)}")
+
 			if position == self.tile_windows[0]:
 				final_gdf = mask_gdf
 			else:
@@ -102,15 +108,15 @@ class PolygonExtractor:
 		for i in range(len(mask_dict)):
 
 			if mask_dict[i]["segmentation"].sum() == 0:
-				print(f"Mask {i} is empty, skipping...")
+				#print(f"Mask {i} is empty, skipping...")
 				continue
 
 			if mask_dict[i]["area"] < self.mask_skip_threshold:
-				print(f"Mask {i} is too small, skipping...")
+				#print(f"Mask {i} is too small, skipping...")
 				continue
 
 			if mask_dict[i]["bbox"][2] < 5 and mask_dict[i]["bbox"][3] < 5:
-				print(f"Mask {i} bounding box is too small, skipping...")
+				#print(f"Mask {i} bounding box is too small, skipping...")
 				continue
 
 			
@@ -125,22 +131,22 @@ class PolygonExtractor:
 			geoms = [shapely.geometry.shape(g) for g, v in pairs if v == 1]
 
 			if not geoms:
-				print(f"No FG geometry for mask {i}; skipping")
+				#print(f"No FG geometry for mask {i}; skipping")
 				continue
 
 			# If there are multiple pieces, decide what to do:
 			if len(geoms) > 1:
-				print(f"{len(geoms)} geometries for mask {i}; using largest")
+				#print(f"{len(geoms)} geometries for mask {i}; using largest")
 				shap = max(geoms, key=lambda g: g.area)
 			else:
 				shap = geoms[0]
 
 			if(len(shap.interiors) > 0):
-				print(f"Mask {i} has {len(shap.interiors)} holes; using exterior only")
+				#print(f"Mask {i} has {len(shap.interiors)} holes; using exterior only")
 				keep = [ring for ring in shap.interiors if Polygon(ring).area >= self.mask_min_hole_area]
 				if keep:
-					print(f"Keeping {len(keep)} holes")
-				shap = Polygon(shap.exterior, holes=keep)
+					#print(f"Keeping {len(keep)} holes")
+					shap = Polygon(shap.exterior, holes=keep)
 
 			mask = np.zeros((img.shape[0], img.shape[1]), dtype=bool)
 			x, y = shap.exterior.xy  # x=cols, y=rows from shapely polygon in pixel coords
@@ -155,7 +161,7 @@ class PolygonExtractor:
 			masked_img = np.where(mask[..., None], img, np.nan)
 			
 			if masked_img.min() == 0 and masked_img.nanmax() == 0:
-				print(f"Mask {i} is black, skipping...")
+				#print(f"Mask {i} is black, skipping...")
 				continue
 
 			row = {
@@ -174,6 +180,10 @@ class PolygonExtractor:
 
 
 		gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs=None)
+
+		with open(f"{self.fire_name}_{self.pic_number}_polygons.pkl", "wb") as f:
+			pickle.dump(gdf, f)
+
 		return gdf
             
 
@@ -182,7 +192,7 @@ class PolygonExtractor:
 		props = measure.regionprops(full_mask)
 
 		if len(props) != 1:
-			print(f"Multiple regions found for mask index {i}")
+			#print(f"Multiple regions found for mask")
 			return None
 		
 		def log_norm(x):
@@ -476,7 +486,8 @@ if __name__ == "__main__":
 	pre_image_f = f"../fires/{fire_name}/images/{fire_name}-wildfire_0000{pic_number}_pre_disaster.tif"
 	post_image_f = f"../fires/{fire_name}/images/{fire_name}-wildfire_0000{pic_number}_post_disaster.tif"
 	
-	extractor = PolygonExtractor(pre_image_f, mask_size_threshold=20, mask_min_hole_area=10)
+	extractor = PolygonExtractor(pre_image_f, mask_size_threshold=20, mask_min_hole_area=10, fire_name=fire_name, pic_number=pic_number)
 	gdf = extractor.run_SAM_on_image()
+
 	extractor.show_gdf_in_pixel_space(gdf)
 
