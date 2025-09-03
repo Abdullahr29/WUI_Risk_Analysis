@@ -167,7 +167,7 @@ class PolygonExtractor:
 				continue
 
 			row = {
-				"id": i+1,
+				"id": i+1+(self.tile_windows.index(tile_location)*1000),
 				"geometry": shap,
 				"class": None,
 				"area_px": mask_dict[i]["area"],
