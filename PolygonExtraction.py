@@ -18,6 +18,9 @@ import torch
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 import gc
 import pickle
+import time
+import warnings
+warnings.filterwarnings("ignore", module=r".*sam2.*", message=r".*cannot import name '_C'.*")
 
 class PolygonExtractor:
 	def __init__(self, image_path, mask_size_threshold=10, mask_min_hole_area=10, fire_name=None, pic_number=None):
@@ -54,7 +57,7 @@ class PolygonExtractor:
 			with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
 				
 				mask_generator = SAM2AutomaticMaskGenerator.from_pretrained(
-					model_id="sam2-hiera-large",
+					model_id="facebook/sam2-hiera-large",
 					device="cuda",
 					mode="eval",
 					hydra_overrides_extra=None,
@@ -78,7 +81,8 @@ class PolygonExtractor:
 				)
 
 				mask_table = mask_generator.generate(current_image)
-
+				
+				print(f"CUDA memory allocated: {torch.cuda.memory_allocated()/(1024**3):.2f} GB")
 				mask_generator.predictor.reset_predictor()
 				del mask_generator
 
@@ -392,7 +396,6 @@ class PolygonExtractor:
 	@staticmethod
 	def clean_cache(): 
 		if torch.cuda.is_available():
-			print(f"CUDA memory allocated: {torch.cuda.memory_allocated()/(1024**3):.2f} GB")
 			#torch.cuda.synchronize()
 			torch.cuda.empty_cache()
 			gc.collect()
@@ -502,8 +505,13 @@ if __name__ == "__main__":
 	pre_image_f = f"../fires/{fire_name}/images/{fire_name}-wildfire_0000{pic_number}_pre_disaster.tif"
 	post_image_f = f"../fires/{fire_name}/images/{fire_name}-wildfire_0000{pic_number}_post_disaster.tif"
 	
+	t0 = time.perf_counter()
+
 	extractor = PolygonExtractor(pre_image_f, mask_size_threshold=10, mask_min_hole_area=10, fire_name=fire_name, pic_number=pic_number)
 	gdf = extractor.run_SAM_on_image()
 
 	extractor.show_gdf_in_pixel_space(gdf)
+
+	elapsed = time.perf_counter() - t0
+	print(f"Elapsed time: {elapsed:.2f} s")
 
