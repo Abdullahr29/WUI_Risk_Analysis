@@ -9,7 +9,6 @@ from rasterio.plot import show
 from rasterio.windows import Window
 from rasterio import features
 import shapely
-import numpy as np
 import matplotlib.pyplot as plt
 import json
 from shapely import wkt
@@ -32,7 +31,6 @@ from rasterio.mask import mask
 from rasterio.plot import show
 from rasterio import features
 import shapely
-import numpy as np
 import matplotlib.pyplot as plt
 import json
 from shapely import wkt
@@ -44,8 +42,10 @@ from skimage.draw import polygon as draw_polygon
 import scipy.ndimage as ndi
 import rioxarray as rxr
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:256"
+import numpy as np
 import torch
 from samgeo import SamGeo2
+from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 import gc
 import sys
 import pickle
@@ -82,23 +82,35 @@ class PolygonExtractor:
 			
 			current_image = np.transpose(self.tiles[position]['image'], (1,2,0))
 
-			with torch.no_grad():
-				sam2 = SamGeo2(
+			with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+				
+				mask_generator = SAM2AutomaticMaskGenerator.from_pretrained(
 					model_id="sam2-hiera-large",
+					device="cuda",
+					mode="eval",
+					hydra_overrides_extra=None,
 					apply_postprocessing=False,
 					points_per_side=128,
 					points_per_batch=64,
 					pred_iou_thresh=0.7,
 					stability_score_thresh=0.8,
 					stability_score_offset=0.7,
-					crop_n_layers=1,
+					mask_threshold=0.0,
 					box_nms_thresh=0.7,
+					crop_n_layers=1,
+					crop_nms_thresh=0.7,
+					crop_overlap_ratio= 512 / 1500,
 					crop_n_points_downscale_factor=2,
+					point_grids=None,
 					min_mask_region_area=10,
+					output_mode="binary_mask",
 					use_m2m=True,
+					multimask_output=False,
 				)
 
-				mask_table = sam2.generate(current_image)
+				mask_table = mask_generator.generate(current_image)
+
+				mask_generator.predictor.reset_predictor()
 
 				PolygonExtractor.clean_cache()
 			
@@ -411,7 +423,8 @@ class PolygonExtractor:
 	def clean_cache(): 
 		if torch.cuda.is_available():
 			print(f"CUDA memory allocated: {torch.cuda.memory_allocated()/(1024**3):.2f} GB")
-			torch.cuda.empty_cache()  
+			torch.cuda.synchronize()
+			torch.cuda.empty_cache()
 			gc.collect()
 			print(f"CUDA memory allocated after emptying cache: {torch.cuda.memory_allocated()/(1024**3):.2f} GB")
 		
