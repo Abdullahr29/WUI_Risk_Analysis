@@ -489,7 +489,7 @@ class PolygonExtractor:
 			for key, ((r_start, r_end), (c_start, c_end)) in windows.items():
 				tiles[key] = {
 					"image": image[:, r_start:r_end, c_start:c_end],
-					"origin": (c_start, r_start),  # x, y offset
+					"origin": (r_start, c_start),  # row, col
 					"bounds": box(c_start, r_start, c_end, r_end)
 				}
 
