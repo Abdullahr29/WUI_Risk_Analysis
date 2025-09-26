@@ -541,5 +541,5 @@ if __name__ == "__main__":
 	extractor.show_gdf_in_pixel_space(gdf)
 
 	elapsed = time.perf_counter() - t0
-	print(f"Elapsed time: {elapsed:.2f} s")
+	print(f"Elapsed time: {(elapsed/60):.2f} mins")
 
