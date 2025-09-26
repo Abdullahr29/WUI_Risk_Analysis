@@ -20,7 +20,18 @@ import gc
 import pickle
 import time
 import warnings
-warnings.filterwarnings("ignore", module=r".*sam2.*", message=r".*cannot import name '_C'.*")
+warnings.filterwarnings(
+	"ignore", 
+	module=r".*sam2.*", 
+	message=r".*cannot import name '_C'.*"
+)
+# warnings.filterwarnings(
+#     "ignore",
+#     category=RuntimeWarning,
+#     message=r".*invalid value encountered in cast.*",
+#     module=r".*numpy.*"
+# )
+
 
 class PolygonExtractor:
 	def __init__(self, image_path, mask_size_threshold=10, mask_min_hole_area=10, fire_name=None, pic_number=None):
@@ -42,10 +53,25 @@ class PolygonExtractor:
 		self.mask_min_hole_area = mask_min_hole_area
 		self.fire_name = fire_name
 		self.pic_number = pic_number
+		self.idx = 1
+		self.eps = 1e-6
 
 
 	def run_SAM_on_image(self, save_masks=True):
 		PolygonExtractor.clean_cache()
+
+		with rasterio.open(self.image_path) as src:
+			red = src.read(1).astype(np.float32)
+			green = src.read(2).astype(np.float32)
+			blue = src.read(3).astype(np.float32)
+			
+			# Normalize bands to 0–1
+			self.red /= (red.max()+self.eps) 
+			self.green /= (green.max()+self.eps)
+			self.blue /= (blue.max()+self.eps)
+
+			self.img = np.dstack((self.red, self.green, self.blue))  # (H, W, C)
+			self.generate_spectral_bands(self.red, self.green, self.blue)
 		
 		PolygonExtractor.normalize_to_uint8_per_band(self.image_path, export=True, export_path=self.norm_img_path)
 		self.tiles = PolygonExtractor.split_image_into_nine_with_overlap(self.norm_img_path, overlap_fraction=0.2)
@@ -99,6 +125,8 @@ class PolygonExtractor:
 
 			PolygonExtractor.clean_cache()
 
+		final_gdf.attrs["pixel_transform"] = (0,1,0, 0,0,1)	
+
 		print(f"Total polygons before deduplication: {len(final_gdf)}")
 
 		with open(f"{self.fire_name}_{self.pic_number}_polygons.pkl", "wb") as f:
@@ -108,25 +136,13 @@ class PolygonExtractor:
 
 
 	def masks_to_shapes(self, mask_dict, tile_location="bottom_right"):
-		eps = 1e-6  # small constant to avoid division by zero
-
-		with rasterio.open(self.image_path) as src:
-			red = src.read(1).astype(np.float32)
-			green = src.read(2).astype(np.float32)
-			blue = src.read(3).astype(np.float32)
-			
-			# Normalize bands to 0–1
-			red /= (red.max()+eps) 
-			green /= (green.max()+eps)
-			blue /= (blue.max()+eps)
-
-			img = np.dstack((red, green, blue))  # (H, W, C)
-
 		rows = []    
 		
 		for i in range(len(mask_dict)):
 
-			if mask_dict[i]["segmentation"].sum() == 0:
+			seg = mask_dict[i]["segmentation"].astype(np.uint8) 
+
+			if seg.sum() == 0:
 				#print(f"Mask {i} is empty, skipping...")
 				continue
 
@@ -138,16 +154,11 @@ class PolygonExtractor:
 				#print(f"Mask {i} bounding box is too small, skipping...")
 				continue
 
-			
+			pairs = list(features.shapes(seg, mask=(seg==1)))  # materialize ONCE
+			geoms_local = [shapely.geometry.shape(g) for g, v in pairs if v == 1]
+
 			r0, c0 = self.tiles[tile_location]["origin"]
-			h, w = mask_dict[i]["segmentation"].shape
-			full_mask = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
-			full_mask[r0:r0+h, c0:c0+w] = mask_dict[i]["segmentation"].astype(np.uint8)
-
-			msk = (full_mask == 1)
-
-			pairs = list(features.shapes(full_mask, mask=msk))  # materialize ONCE
-			geoms = [shapely.geometry.shape(g) for g, v in pairs if v == 1]
+			geoms = [shapely.affinity.translate(g, xoff=c0, yoff=r0) for g in geoms_local]
 
 			if not geoms:
 				#print(f"No FG geometry for mask {i}; skipping")
@@ -167,7 +178,7 @@ class PolygonExtractor:
 					#print(f"Keeping {len(keep)} holes")
 					shap = Polygon(shap.exterior, holes=keep)
 
-			mask = np.zeros((img.shape[0], img.shape[1]), dtype=bool)
+			mask = np.zeros((self.img.shape[0], self.img.shape[1]), dtype=bool)
 			x, y = shap.exterior.xy  # x=cols, y=rows from shapely polygon in pixel coords
 			rr, cc = draw_polygon(np.array(y), np.array(x), shape=mask.shape)
 			mask[rr, cc] = True
@@ -176,36 +187,39 @@ class PolygonExtractor:
 				rr, cc = draw_polygon(np.array(hy), np.array(hx), shape=mask.shape)
 				mask[rr, cc] = False
 
-
-			masked_img = np.where(mask[..., None], img, np.nan)
+			masked_img = np.where(mask[..., None], self.img, np.nan)
 			
-			if masked_img.min() == 0 and masked_img.nanmax() == 0:
+			if np.nanmin(masked_img) == 0 and np.nanmax(masked_img) <= self.eps:
 				#print(f"Mask {i} is black, skipping...")
+				continue
+			
+			img_rows, img_cols = np.where(mask)
+			props = self.extract_region_properties(mask, shap, img_rows, img_cols)
+
+			if props is None:
+				print(f"Skipping mask {i} due to region properties extraction failure")
 				continue
 
 			row = {
-				"id": i+1+(self.tile_windows.index(tile_location)*1000),
+				"id": self.idx,
 				"geometry": shap,
 				"class": None,
 				"area_px": mask_dict[i]["area"],
 				"pred_score": mask_dict[i]["predicted_iou"],
 				"stability_score": mask_dict[i]["stability_score"]
 			}
-
-			props = self.extract_region_properties(full_mask, mask, shap, red, green, blue)
 		
 			final_dict = row | props
 			rows.append(final_dict)
-
+			idx += 1
 
 		gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs=None)
 
 		return gdf
-            
-
-	def extract_region_properties(self, full_mask, mask, shap, red, green, blue):
-		eps = 1e-6  # small constant to avoid division by zero
-		props = measure.regionprops(full_mask)
+	
+	
+	def extract_region_properties(self, mask, shap, rr, cc):
+		props = measure.regionprops(mask.astype(np.uint8))
 
 		if len(props) != 1:
 			#print(f"Multiple regions found for mask")
@@ -214,37 +228,34 @@ class PolygonExtractor:
 		def log_norm(x):
 			return np.sign(x) * np.log1p(np.abs(x))
 		
-		S = red + green + blue + eps
-		R = red / S; G = green / S; B = blue / S
-
-		TGI = -0.5 * (190*(R - G) - 120*(R - B))
-		RGND = (R - G) / (R + G + eps)
-		ExG  = 2*G - R - B
-
-		hsv = color.rgb2hsv(np.dstack([red,green,blue]))
-		H_hsv, S_hsv, V_hsv = hsv[...,0], hsv[...,1], hsv[...,2]
-
-		UBI = (R - B) / (R + B + eps)
-		UBI_hsv = (H_hsv - V_hsv) / (H_hsv + V_hsv + eps)
-
-		lab = color.rgb2lab(np.dstack([red,green,blue]))
-		L_star, a_star, b_star = lab[...,0], lab[...,1], lab[...,2]
-
-		gray = color.rgb2gray(np.dstack([red,green,blue]))
-
-		masked_gray = np.where(mask, gray, np.nan)
+		masked_gray = np.where(mask, self.gray, np.nan)
 		masked_gray = masked_gray[int(shap.bounds[1]):int(shap.bounds[3])+1, int(shap.bounds[0]):int(shap.bounds[2])+1]
-		
-		int_gray = (masked_gray*63).astype(np.uint8)
 
-		glcm = graycomatrix(int_gray, distances=(1,2,4,6), angles=(0, np.pi/4, np.pi/2, 3*np.pi/4), levels=64, symmetric=True, normed=True)
-		contrast = graycoprops(glcm, 'contrast')
-		homogeneity = graycoprops(glcm, 'homogeneity')
-		correlation = graycoprops(glcm, 'correlation')
-		energy = graycoprops(glcm, 'energy')
-		dissimilarity = graycoprops(glcm, 'dissimilarity')
-		ASM = graycoprops(glcm, 'ASM')
-		entropy = graycoprops(glcm, 'entropy')
+		levels = 64
+		valid = np.isfinite(masked_gray)             # inside-polygon pixels
+		if valid.sum() < self.mask_size_threshold:
+			return None  # too small to be reliable
+
+		vals = masked_gray[valid]
+		vmin, vmax = vals.min(), vals.max()
+		if vmax - vmin < self.eps:
+			return None  # flat patch
+		
+		q = np.zeros_like(masked_gray, dtype=np.uint8)  # 0 = outside
+		q[valid] = np.floor((vals - vmin) / (vmax - vmin + self.eps) * (levels - 1)).astype(np.uint8) + 1
+
+		glcm = graycomatrix(q, distances=(1,2,4,6), angles=(0, np.pi/4, np.pi/2, 3*np.pi/4), levels=levels+1, symmetric=True, normed=True)
+		
+		p = glcm[1:, 1:, :, :].astype(np.float64)        # drop outside (0) bin
+		p /= (p.sum(axis=(0,1), keepdims=True) + 1e-12)
+		
+		contrast = graycoprops(p, 'contrast')
+		homogeneity = graycoprops(p, 'homogeneity')
+		correlation = graycoprops(p, 'correlation')
+		energy = graycoprops(p, 'energy')
+		dissimilarity = graycoprops(p, 'dissimilarity')
+		ASM = graycoprops(p, 'ASM')
+		entropy = graycoprops(p, 'entropy')
 
 		features_contrast = {f'contrast_d{d}': v for d, v in zip((1,2,4,6), contrast.mean(axis=1))}
 		features_homogeneity = {f'homogeneity_d{d}': v for d, v in zip((1,2,4,6), homogeneity.mean(axis=1))}
@@ -261,17 +272,16 @@ class PolygonExtractor:
 
 				"axis_major_length": props[0].major_axis_length,
 				"axis_minor_length": props[0].minor_axis_length,
-				"axes_aspect_ratio": props[0].axis_major_length / np.clip(props[0].axis_minor_length, a_min=1e-5, a_max=None),
+				"axes_aspect_ratio": props[0].axis_major_length / np.clip(props[0].axis_minor_length, a_min=self.eps, a_max=None),
 				
 				"perimeter_crofton": props[0].perimeter_crofton,
-				"circularity": (4 * np.pi * props[0].area) / np.clip(props[0].perimeter_crofton ** 2, a_min=1e-5, a_max=None),
+				"circularity": (4 * np.pi * props[0].area) / np.clip(props[0].perimeter_crofton ** 2, a_min=self.eps, a_max=None),
 				"eccentricity": props[0].eccentricity,
 				"equivalent_diameter_area": props[0].equivalent_diameter_area,
 				"extent": props[0].extent,
 				"feret_diameter_max": props[0].feret_diameter_max,
 				"orientation": props[0].orientation,
 				"solidity": props[0].solidity,
-				"euler_number": props[0].euler_number,
 
 				"moments_hu_1": log_norm(props[0].moments_hu[0]),
 				"moments_hu_2": log_norm(props[0].moments_hu[1]),
@@ -281,36 +291,36 @@ class PolygonExtractor:
 				"moments_hu_6": log_norm(props[0].moments_hu[5]),
 				"moments_hu_7": log_norm(props[0].moments_hu[6]),
 
-				"R_mean": np.nanmean(np.where(mask, red, np.nan)),
-				"R_std": np.nanstd(np.where(mask, red, np.nan)),
-				"G_mean": np.nanmean(np.where(mask, green, np.nan)),
-				"G_std": np.nanstd(np.where(mask, green, np.nan)),
-				"B_mean": np.nanmean(np.where(mask, blue, np.nan)),
-				"B_std": np.nanstd(np.where(mask, blue, np.nan)),
-				"H_hsv_mean": np.nanmean(np.where(mask, H_hsv, np.nan)),
-				"H_hsv_std": np.nanstd(np.where(mask, H_hsv, np.nan)),
-				"S_hsv_mean": np.nanmean(np.where(mask, S_hsv, np.nan)),
-				"S_hsv_std": np.nanstd(np.where(mask, S_hsv, np.nan)),
-				"V_hsv_mean": np.nanmean(np.where(mask, V_hsv, np.nan)),
-				"V_hsv_std": np.nanstd(np.where(mask, V_hsv, np.nan)),
-				"ExG_mean": np.nanmean(np.where(mask, ExG, np.nan)),
-				"ExG_std": np.nanstd(np.where(mask, ExG, np.nan)),
-				"TGI_mean": np.nanmean(np.where(mask, TGI, np.nan)),
-				"TGI_std": np.nanstd(np.where(mask, TGI, np.nan)),
-				"UBI_mean": np.nanmean(np.where(mask, UBI, np.nan)),
-				"UBI_std": np.nanstd(np.where(mask, UBI, np.nan)),
-				"UBI_hsv_mean": np.nanmean(np.where(mask, UBI_hsv, np.nan)),
-				"UBI_hsv_std": np.nanstd(np.where(mask, UBI_hsv, np.nan)),
-				"L_star_mean": np.nanmean(np.where(mask, L_star, np.nan)),
-				"L_star_std": np.nanstd(np.where(mask, L_star, np.nan)),
-				"a_star_mean": np.nanmean(np.where(mask, a_star, np.nan)),
-				"a_star_std": np.nanstd(np.where(mask, a_star, np.nan)),
-				"b_star_mean": np.nanmean(np.where(mask, b_star, np.nan)),
-				"b_star_std": np.nanstd(np.where(mask, b_star, np.nan)),
+				"R_mean": np.mean(self.red[rr, cc]),
+				"R_std": np.std(self.red[rr, cc]),
+				"G_mean": np.mean(self.green[rr, cc]),
+				"G_std": np.std(self.green[rr, cc]),
+				"B_mean": np.mean(self.blue[rr, cc]),
+				"B_std": np.std(self.blue[rr, cc]),
+				"H_hsv_mean": np.mean(self.H_hsv[rr, cc]),
+				"H_hsv_std": np.std(self.H_hsv[rr, cc]),
+				"S_hsv_mean": np.mean(self.S_hsv[rr, cc]),
+				"S_hsv_std": np.std(self.S_hsv[rr, cc]),
+				"V_hsv_mean": np.mean(self.V_hsv[rr, cc]),
+				"V_hsv_std": np.std(self.V_hsv[rr, cc]),
+				"ExG_mean": np.mean(self.ExG[rr, cc]),
+				"ExG_std": np.std(self.ExG[rr, cc]),
+				"TGI_mean": np.mean(self.TGI[rr, cc]),
+				"TGI_std": np.std(self.TGI[rr, cc]),
+				"UBI_mean": np.mean(self.UBI[rr, cc]),
+				"UBI_std": np.std(self.UBI[rr, cc]),
+				"UBI_hsv_mean": np.mean(self.UBI_hsv[rr, cc]),
+				"UBI_hsv_std": np.std(self.UBI_hsv[rr, cc]),
+				"L_star_mean": np.mean(self.L_star[rr, cc]),
+				"L_star_std": np.std(self.L_star[rr, cc]),
+				"a_star_mean": np.mean(self.a_star[rr, cc]),
+				"a_star_std": np.std(self.a_star[rr, cc]),
+				"b_star_mean": np.mean(self.b_star[rr, cc]),
+				"b_star_std": np.std(self.b_star[rr, cc]),
 				"gray_mean": np.nanmean(masked_gray),
 				"gray_std": np.nanstd(masked_gray),
-				"RGND_mean": np.nanmean(np.where(mask, RGND, np.nan)),
-				"RGND_std": np.nanstd(np.where(mask, RGND, np.nan)),
+				"RGND_mean": np.mean(self.RGND[rr, cc]),
+				"RGND_std": np.std(self.RGND[rr, cc]),
 
 				"contrast_mean": contrast.mean(),
 				"homogeneity_mean": homogeneity.mean(),
@@ -324,6 +334,26 @@ class PolygonExtractor:
 		
 		return props | features_contrast | features_homogeneity | features_correlation | features_energy | features_dissimilarity | features_ASM | features_entropy
     
+
+	def generate_spectral_bands(self, red, green, blue):
+
+		S = red + green + blue + self.eps
+		R = red / S; G = green / S; B = blue / S
+
+		self.TGI = -0.5 * (190*(R - G) - 120*(R - B))
+		self.RGND = (R - G) / (R + G + self.eps)
+		self.ExG  = 2*G - R - B
+
+		hsv = color.rgb2hsv(np.dstack([red,green,blue]))
+		self.H_hsv, self.S_hsv, self.V_hsv = hsv[...,0], hsv[...,1], hsv[...,2]
+
+		self.UBI = (R - B) / (R + B + self.eps)
+		self.UBI_hsv = (self.H_hsv - self.V_hsv) / (self.H_hsv + self.V_hsv + self.eps)
+
+		lab = color.rgb2lab(np.dstack([red,green,blue]))
+		self.L_star, self.a_star, self.b_star = lab[...,0], lab[...,1], lab[...,2]
+
+		self.gray = color.rgb2gray(np.dstack([red,green,blue]))
 
 	def show_gdf_in_pixel_space(self, gdf_pixels, idx=None, pad_px=50):
 
@@ -396,10 +426,9 @@ class PolygonExtractor:
 	@staticmethod
 	def clean_cache(): 
 		if torch.cuda.is_available():
-			#torch.cuda.synchronize()
+			torch.cuda.synchronize()
 			torch.cuda.empty_cache()
 			gc.collect()
-			print(f"CUDA memory allocated after emptying cache: {torch.cuda.memory_allocated()/(1024**3):.2f} GB")
 		
 
 	@staticmethod
@@ -463,7 +492,6 @@ class PolygonExtractor:
 		
 		with rasterio.open(image_path) as src:
 			image = src.read()  # shape: (C, H, W)
-			transform = src.transform
 			height, width = image.shape[1], image.shape[2]
 			
 			third_h = height // 3
