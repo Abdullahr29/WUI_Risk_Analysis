@@ -66,9 +66,9 @@ class PolygonExtractor:
 			blue = src.read(3).astype(np.float32)
 			
 			# Normalize bands to 0–1
-			self.red /= (red.max()+self.eps) 
-			self.green /= (green.max()+self.eps)
-			self.blue /= (blue.max()+self.eps)
+			self.red = red / (red.max()+self.eps) 
+			self.green = green / (green.max()+self.eps)
+			self.blue = blue / (blue.max()+self.eps)
 
 			self.img = np.dstack((self.red, self.green, self.blue))  # (H, W, C)
 			self.generate_spectral_bands(self.red, self.green, self.blue)
@@ -211,7 +211,7 @@ class PolygonExtractor:
 		
 			final_dict = row | props
 			rows.append(final_dict)
-			idx += 1
+			self.idx += 1
 
 		gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs=None)
 
@@ -535,7 +535,7 @@ if __name__ == "__main__":
 	
 	t0 = time.perf_counter()
 
-	extractor = PolygonExtractor(pre_image_f, mask_size_threshold=10, mask_min_hole_area=10, fire_name=fire_name, pic_number=pic_number)
+	extractor = PolygonExtractor(pre_image_f, mask_size_threshold=15, mask_min_hole_area=10, fire_name=fire_name, pic_number=pic_number)
 	gdf = extractor.run_SAM_on_image()
 
 	extractor.show_gdf_in_pixel_space(gdf)
