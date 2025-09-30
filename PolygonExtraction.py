@@ -1,3 +1,5 @@
+#region Imports
+
 import geopandas as gpd
 import pandas as pd
 import rasterio
@@ -25,30 +27,17 @@ warnings.filterwarnings(
 	module=r".*sam2.*", 
 	message=r".*cannot import name '_C'.*"
 )
-# warnings.filterwarnings(
-#     "ignore",
-#     category=RuntimeWarning,
-#     message=r".*invalid value encountered in cast.*",
-#     module=r".*numpy.*"
-# )
+
+#endregion
 
 
 class PolygonExtractor:
+
+	#region Main Functions
+
 	def __init__(self, image_path, mask_size_threshold=10, mask_min_hole_area=10, fire_name=None, pic_number=None):
 		self.image_path = image_path
 		self.norm_img_path = f"{fire_name}_{pic_number}_norm_img.tif"
-		self.tile_windows = [
-            "top_left",
-            "top_center",
-            "top_right",
-            "center_left",
-            "center",
-            "center_right",
-            "bottom_left", 
-            "bottom_center",
-            "bottom_right",
-        ]
-		self.tiles = None
 		self.mask_size_threshold = mask_size_threshold
 		self.mask_min_hole_area = mask_min_hole_area
 		self.fire_name = fire_name
@@ -74,7 +63,7 @@ class PolygonExtractor:
 			self.generate_spectral_bands(self.red, self.green, self.blue)
 		
 		PolygonExtractor.normalize_to_uint8_per_band(self.image_path, export=True, export_path=self.norm_img_path)
-		self.tiles = PolygonExtractor.split_image_into_nine_with_overlap(self.norm_img_path, overlap_fraction=0.2)
+		self.tiles = self.__split_image_into_quarters()
 
 		for position in self.tile_windows:
 			
@@ -88,7 +77,7 @@ class PolygonExtractor:
 					mode="eval",
 					hydra_overrides_extra=None,
 					apply_postprocessing=False,
-					points_per_side=128,
+					points_per_side=256,
 					points_per_batch=64,
 					pred_iou_thresh=0.7,
 					stability_score_thresh=0.8,
@@ -133,7 +122,10 @@ class PolygonExtractor:
 			pickle.dump(final_gdf, f)
 
 		return final_gdf
+	
+	#endregion
 
+	#region Mask Processing
 
 	def masks_to_shapes(self, mask_dict, tile_location="bottom_right"):
 		rows = []    
@@ -354,6 +346,11 @@ class PolygonExtractor:
 		self.L_star, self.a_star, self.b_star = lab[...,0], lab[...,1], lab[...,2]
 
 		self.gray = color.rgb2gray(np.dstack([red,green,blue]))
+	
+
+	#endregion
+
+	#region Utilitly Functions	
 
 	def show_gdf_in_pixel_space(self, gdf_pixels, idx=None, pad_px=50):
 
@@ -475,8 +472,40 @@ class PolygonExtractor:
 
 		return norm_image
 	
+	#endregion
+	
+	#region Tiling
+	
+	def __split_image_into_nine(self, overlap_fraction=0.2):
+
+		self.tile_windows = [
+            "top_left",
+            "top_center",
+            "top_right",
+            "center_left",
+            "center",
+            "center_right",
+            "bottom_left", 
+            "bottom_center",
+            "bottom_right",
+        ]
+
+		self.tiles = PolygonExtractor.split_image_into_nine(image_path=self.image_path, overlap_fraction=overlap_fraction)
+
+
+	def __split_image_into_quarters(self):
+
+		self.tile_windows = [
+            "top_left",
+            "top_right",
+            "bottom_left", 
+            "bottom_right",
+        ]
+
+		self.tiles = PolygonExtractor.split_image_into_quarters(self.image_path)
+	
 	@staticmethod
-	def split_image_into_nine_with_overlap(image_path, overlap_fraction=0.2):
+	def split_image_into_nine(image_path, overlap_fraction=0.2):
 		"""
 		Splits the image into 9 overlapping tiles with keys indicating relative positions.
 		Each tile overlaps its neighbors by a specified fraction.
@@ -524,7 +553,48 @@ class PolygonExtractor:
 
 		return tiles
 	
+	@staticmethod
+	def split_image_into_quarters(image_path):
+		"""
+		Splits the image into 4 tiles
 
+		Parameters:
+			image_path (str): Path to the input image (.tif).
+			overlap_fraction (float): Fraction of overlap between adjacent tiles.
+
+		Returns:
+			dict: Dictionary of tiles with keys like 'top_left', 'bottom_right', etc.
+				Each entry contains 'image', 'row_bounds', 'col_bounds', 'transform'.
+		"""
+		with rasterio.open(image_path) as src:
+			image = src.read()  # (C, H, W)
+
+		_, H, W = image.shape
+		h_half, w_half = H // 2, W // 2
+
+		# Define windows
+		windows = {
+			"top_left":    ((0, h_half),     (0, w_half)),
+			"top_right":   ((0, h_half),     (w_half, W)),
+			"bottom_left": ((h_half, H),     (0, w_half)),
+			"bottom_right":((h_half, H),     (w_half, W))
+		}
+
+		# Extract quarters
+		quarters = {}
+		for key, ((r_start, r_end), (c_start, c_end)) in windows.items():
+			quarters[key] = {
+				"image": image[:, r_start:r_end, c_start:c_end],
+				"origin": (r_start, c_start),  # x, y offset
+				"bounds": box(c_start, r_start, c_end, r_end)
+			}
+
+		return quarters
+	
+	#endregion
+	
+
+#region Main
 
 if __name__ == "__main__":
 	fire_name = "santa-rosa"
@@ -543,3 +613,4 @@ if __name__ == "__main__":
 	elapsed = time.perf_counter() - t0
 	print(f"Elapsed time: {(elapsed/60):.2f} mins")
 
+#endregion
