@@ -35,18 +35,19 @@ class PolygonExtractor:
 
 	#region Main Functions
 
-	def __init__(self, image_path, mask_size_threshold=10, mask_min_hole_area=10, fire_name=None, pic_number=None):
+	def __init__(self, image_path, mask_size_threshold=10, mask_min_hole_area=10, fire_name=None, pic_number=None, tile_quarter=True):
 		self.image_path = image_path
 		self.norm_img_path = f"{fire_name}_{pic_number}_norm_img.tif"
 		self.mask_size_threshold = mask_size_threshold
 		self.mask_min_hole_area = mask_min_hole_area
 		self.fire_name = fire_name
 		self.pic_number = pic_number
+		self.tile_quarter = tile_quarter
 		self.idx = 1
 		self.eps = 1e-6
 
 
-	def run_SAM_on_image(self, save_masks=True):
+	def run_SAM_on_image(self):
 		PolygonExtractor.clean_cache()
 
 		with rasterio.open(self.image_path) as src:
@@ -63,7 +64,11 @@ class PolygonExtractor:
 			self.generate_spectral_bands(self.red, self.green, self.blue)
 		
 		PolygonExtractor.normalize_to_uint8_per_band(self.image_path, export=True, export_path=self.norm_img_path)
-		self.tiles = self.__split_image_into_quarters()
+
+		if self.tile_quarter:
+			self.tiles = self.__split_image_into_quarters()
+		else:
+			self.tiles = self.__split_image_into_nine()
 
 		for position in self.tile_windows:
 			
@@ -89,7 +94,7 @@ class PolygonExtractor:
 					crop_overlap_ratio= 512 / 1500,
 					crop_n_points_downscale_factor=2,
 					point_grids=None,
-					min_mask_region_area=10,
+					min_mask_region_area=self.mask_size_threshold,
 					output_mode="binary_mask",
 					use_m2m=True,
 					multimask_output=False,
@@ -209,12 +214,19 @@ class PolygonExtractor:
 
 		return gdf
 	
-	
+ 
 	def extract_region_properties(self, mask, shap, rr, cc):
 		props = measure.regionprops(mask.astype(np.uint8))
 
 		if len(props) != 1:
 			#print(f"Multiple regions found for mask")
+			return None
+		
+		R_mean = np.mean(self.red[rr, cc])
+		G_mean = np.mean(self.green[rr, cc])
+		B_mean = np.mean(self.blue[rr, cc])
+
+		if R_mean < 0.1 and G_mean < 0.1 and B_mean < 0.1:
 			return None
 		
 		def log_norm(x):
@@ -283,11 +295,11 @@ class PolygonExtractor:
 				"moments_hu_6": log_norm(props[0].moments_hu[5]),
 				"moments_hu_7": log_norm(props[0].moments_hu[6]),
 
-				"R_mean": np.mean(self.red[rr, cc]),
+				"R_mean": R_mean,
 				"R_std": np.std(self.red[rr, cc]),
-				"G_mean": np.mean(self.green[rr, cc]),
+				"G_mean": G_mean,
 				"G_std": np.std(self.green[rr, cc]),
-				"B_mean": np.mean(self.blue[rr, cc]),
+				"B_mean": B_mean,
 				"B_std": np.std(self.blue[rr, cc]),
 				"H_hsv_mean": np.mean(self.H_hsv[rr, cc]),
 				"H_hsv_std": np.std(self.H_hsv[rr, cc]),
@@ -490,7 +502,7 @@ class PolygonExtractor:
             "bottom_right",
         ]
 
-		self.tiles = PolygonExtractor.split_image_into_nine(image_path=self.image_path, overlap_fraction=overlap_fraction)
+		self.tiles = PolygonExtractor.split_image_into_nine(self.image_path, overlap_fraction=overlap_fraction)
 
 
 	def __split_image_into_quarters(self):
