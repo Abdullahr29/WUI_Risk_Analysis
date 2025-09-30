@@ -37,7 +37,7 @@ class PolygonExtractor:
 
 	def __init__(self, image_path, mask_size_threshold=10, mask_min_hole_area=10, fire_name=None, pic_number=None, tile_quarter=True):
 		self.image_path = image_path
-		self.norm_img_path = f"{fire_name}_{pic_number}_norm_img.tif"
+		self.norm_image_path = f"{fire_name}_{pic_number}_norm_img.tif"
 		self.mask_size_threshold = mask_size_threshold
 		self.mask_min_hole_area = mask_min_hole_area
 		self.fire_name = fire_name
@@ -63,12 +63,12 @@ class PolygonExtractor:
 			self.img = np.dstack((self.red, self.green, self.blue))  # (H, W, C)
 			self.generate_spectral_bands(self.red, self.green, self.blue)
 		
-		PolygonExtractor.normalize_to_uint8_per_band(self.image_path, export=True, export_path=self.norm_img_path)
+		PolygonExtractor.normalize_to_uint8_per_band(self.image_path, export=True, export_path=self.norm_image_path)
 
 		if self.tile_quarter:
-			self.tiles = self.__split_image_into_quarters()
+			self.__split_image_into_quarters()
 		else:
-			self.tiles = self.__split_image_into_nine()
+			self.__split_image_into_nine()
 
 		for position in self.tile_windows:
 			
@@ -82,7 +82,7 @@ class PolygonExtractor:
 					mode="eval",
 					hydra_overrides_extra=None,
 					apply_postprocessing=False,
-					points_per_side=256,
+					points_per_side=128,
 					points_per_batch=64,
 					pred_iou_thresh=0.7,
 					stability_score_thresh=0.8,
@@ -502,7 +502,7 @@ class PolygonExtractor:
             "bottom_right",
         ]
 
-		self.tiles = PolygonExtractor.split_image_into_nine(self.image_path, overlap_fraction=overlap_fraction)
+		self.tiles = PolygonExtractor.split_image_into_nine(self.norm_image_path, overlap_fraction=overlap_fraction)
 
 
 	def __split_image_into_quarters(self):
@@ -514,7 +514,7 @@ class PolygonExtractor:
             "bottom_right",
         ]
 
-		self.tiles = PolygonExtractor.split_image_into_quarters(self.image_path)
+		self.tiles = PolygonExtractor.split_image_into_quarters(self.norm_image_path)
 	
 	@staticmethod
 	def split_image_into_nine(image_path, overlap_fraction=0.2):
@@ -610,10 +610,11 @@ class PolygonExtractor:
 
 if __name__ == "__main__":
 	fire_name = "santa-rosa"
+	fire_type = "wildfire"
 	pic_number = "0014"
 
-	pre_image_f = f"../fires/{fire_name}/images/{fire_name}-wildfire_0000{pic_number}_pre_disaster.tif"
-	post_image_f = f"../fires/{fire_name}/images/{fire_name}-wildfire_0000{pic_number}_post_disaster.tif"
+	pre_image_f = f"../fires/{fire_name}/images/{fire_name}-{fire_type}_0000{pic_number}_pre_disaster.tif"
+	post_image_f = f"../fires/{fire_name}/images/{fire_name}-{fire_type}_0000{pic_number}_post_disaster.tif"
 	
 	t0 = time.perf_counter()
 
