@@ -6,13 +6,21 @@ import rasterio
 from rasterio.mask import mask
 from rasterio.windows import Window
 from rasterio import features
+from rasterio.features import rasterize, shapes
+from rasterio.enums import MergeAlg
+from affine import Affine
 import shapely
 import matplotlib.pyplot as plt
-from shapely.affinity import affine_transform
-from shapely.geometry import box, Polygon
+from shapely.affinity import affine_transform, translate
+from shapely.geometry import box, Polygon, shape
+from shapely.ops import unary_union
 from skimage import measure, color
 from skimage.draw import polygon as draw_polygon
 from skimage.feature import graycomatrix, graycoprops
+from scipy.ndimage import distance_transform_edt
+from skimage.morphology import reconstruction, remove_small_objects
+from skimage.measure import label
+
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:256"
 import numpy as np
@@ -27,6 +35,7 @@ warnings.filterwarnings(
 	module=r".*sam2.*", 
 	message=r".*cannot import name '_C'.*"
 )
+MAIN_CSV_PATH = "xBD_WUI_Analysis.csv"
 
 #endregion
 
@@ -35,35 +44,25 @@ class PolygonExtractor:
 
 	#region Main Functions
 
-	def __init__(self, image_path, mask_size_threshold=10, mask_min_hole_area=10, fire_name=None, pic_number=None, tile_quarter=True):
-		self.image_path = image_path
-		self.norm_image_path = f"{fire_name}_{pic_number}_norm_img.tif"
+	def __init__(self, row, mask_size_threshold=15, mask_min_hole_area=10, tile_quarter=True):
+		self.csv_row = row
+		self.image_path = row["pre_image_path"]
+		self.gpkg_path = row["gpkg_path"]
+		self.scene_id = row["scene_id"]
+
+		self.norm_image_path = f"{self.scene_id}_norm_img.tif"
 		self.mask_size_threshold = mask_size_threshold
 		self.mask_min_hole_area = mask_min_hole_area
-		self.fire_name = fire_name
-		self.pic_number = pic_number
 		self.tile_quarter = tile_quarter
 		self.idx = 1
 		self.eps = 1e-6
 
+		PolygonExtractor.normalize_to_uint8_per_band(self.image_path, export=True, export_path=self.norm_image_path)
+		self.read_norm_image()
+
 
 	def run_SAM_on_image(self):
 		PolygonExtractor.clean_cache()
-
-		with rasterio.open(self.image_path) as src:
-			red = src.read(1).astype(np.float32)
-			green = src.read(2).astype(np.float32)
-			blue = src.read(3).astype(np.float32)
-			
-			# Normalize bands to 0–1
-			self.red = red / (red.max()+self.eps) 
-			self.green = green / (green.max()+self.eps)
-			self.blue = blue / (blue.max()+self.eps)
-
-			self.img = np.dstack((self.red, self.green, self.blue))  # (H, W, C)
-			self.generate_spectral_bands(self.red, self.green, self.blue)
-		
-		PolygonExtractor.normalize_to_uint8_per_band(self.image_path, export=True, export_path=self.norm_image_path)
 
 		if self.tile_quarter:
 			self.__split_image_into_quarters()
@@ -119,12 +118,14 @@ class PolygonExtractor:
 
 			PolygonExtractor.clean_cache()
 
+		unsegmented_gdf, black_mask, unclassified_mask = self.process_unsegmented_area(final_gdf)
+		final_gdf = pd.concat([unsegmented_gdf, final_gdf], ignore_index=True)
+
 		final_gdf.attrs["pixel_transform"] = (0,1,0, 0,0,1)	
 
 		print(f"Total polygons before deduplication: {len(final_gdf)}")
 
-		with open(f"{self.fire_name}_{self.pic_number}_polygons.pkl", "wb") as f:
-			pickle.dump(final_gdf, f)
+		self.save_gpkg_and_update_csv(final_gdf.copy(), black_mask, unclassified_mask)
 
 		return final_gdf
 	
@@ -132,30 +133,41 @@ class PolygonExtractor:
 
 	#region Mask Processing
 
-	def masks_to_shapes(self, mask_dict, tile_location="bottom_right"):
-		rows = []    
+	def masks_to_shapes(self, mask_dict, tile_location="bottom_right", mask_dict_is_arr=False):
+		rows = []
+
+		if not mask_dict_is_arr:
+			num_masks = len(mask_dict)
+		else:
+			num_masks = mask_dict.max()
 		
-		for i in range(len(mask_dict)):
+		for i in range(num_masks):
+			
+			if not mask_dict_is_arr:
+				seg = mask_dict[i]["segmentation"].astype(np.uint8) 
 
-			seg = mask_dict[i]["segmentation"].astype(np.uint8) 
+				if seg.sum() == 0:
+					#print(f"Mask {i} is empty, skipping...")
+					continue
 
-			if seg.sum() == 0:
-				#print(f"Mask {i} is empty, skipping...")
-				continue
+				if mask_dict[i]["area"] < self.mask_size_threshold:
+					#print(f"Mask {i} is too small, skipping...")
+					continue
 
-			if mask_dict[i]["area"] < self.mask_size_threshold:
-				#print(f"Mask {i} is too small, skipping...")
-				continue
+				if mask_dict[i]["bbox"][2] < 5 and mask_dict[i]["bbox"][3] < 5:
+					#print(f"Mask {i} bounding box is too small, skipping...")
+					continue
+			else: 
+				seg = (mask_dict == i+1).astype(np.uint8)
 
-			if mask_dict[i]["bbox"][2] < 5 and mask_dict[i]["bbox"][3] < 5:
-				#print(f"Mask {i} bounding box is too small, skipping...")
-				continue
+			pairs = list(shapes(seg, mask=(seg==1)))  # materialize ONCE
+			geoms_local = [shape(g) for g, v in pairs if v == 1]
 
-			pairs = list(features.shapes(seg, mask=(seg==1)))  # materialize ONCE
-			geoms_local = [shapely.geometry.shape(g) for g, v in pairs if v == 1]
-
-			r0, c0 = self.tiles[tile_location]["origin"]
-			geoms = [shapely.affinity.translate(g, xoff=c0, yoff=r0) for g in geoms_local]
+			if not mask_dict_is_arr:
+				r0, c0 = self.tiles[tile_location]["origin"]
+				geoms = [translate(g, xoff=c0, yoff=r0) for g in geoms_local]
+			else:
+				geoms = geoms_local
 
 			if not geoms:
 				#print(f"No FG geometry for mask {i}; skipping")
@@ -196,15 +208,29 @@ class PolygonExtractor:
 			if props is None:
 				print(f"Skipping mask {i} due to region properties extraction failure")
 				continue
-
-			row = {
-				"id": self.idx,
-				"geometry": shap,
-				"class": None,
-				"area_px": mask_dict[i]["area"],
-				"pred_score": mask_dict[i]["predicted_iou"],
-				"stability_score": mask_dict[i]["stability_score"]
-			}
+			
+			if not mask_dict_is_arr:
+				row = {
+					"id": self.idx,
+					"scene_id": self.scene_id,
+					"geometry": shap,
+					"class": None,
+					"area_px": mask_dict[i]["area"],
+					"pred_score": mask_dict[i]["predicted_iou"],
+					"stability_score": mask_dict[i]["stability_score"]
+					#"masked_image": masked_img[int(shap.bounds[1]):int(shap.bounds[3])+1, int(shap.bounds[0]):int(shap.bounds[2])+1]
+				}
+			else:
+				row = {
+					"id": self.idx,
+					"geometry": shap,
+					"scene_id": self.scene_id,
+					"class": None,
+					"area_px": shap.area,
+					"pred_score": None,
+					"stability_score": None
+					#"masked_image": masked_img[int(shap.bounds[1]):int(shap.bounds[3])+1, int(shap.bounds[0]):int(shap.bounds[2])+1]
+				}
 		
 			final_dict = row | props
 			rows.append(final_dict)
@@ -358,11 +384,56 @@ class PolygonExtractor:
 		self.L_star, self.a_star, self.b_star = lab[...,0], lab[...,1], lab[...,2]
 
 		self.gray = color.rgb2gray(np.dstack([red,green,blue]))
-	
+
+
+
+	def read_norm_image(self):
+
+		with rasterio.open(self.norm_image_path) as src:
+			red = src.read(1).astype(np.float32)
+			green = src.read(2).astype(np.float32)
+			blue = src.read(3).astype(np.float32)
+			
+			# Normalize bands to 0–1
+			self.red = red / (red.max()+self.eps) 
+			self.green = green / (green.max()+self.eps)
+			self.blue = blue / (blue.max()+self.eps)
+
+			self.img = np.dstack((self.red, self.green, self.blue))  # (H, W, C)
+			self.generate_spectral_bands(self.red, self.green, self.blue)
 
 	#endregion
 
-	#region Utilitly Functions	
+	#region Utilitly Functions
+
+	def save_gpkg_and_update_csv(self, gdf_polys, black_mask, unclass_mask):
+
+		def _write_mask(layer_name, mask):
+				arr = mask.astype("uint8")    # 0/1 (or class ids for class_mask)
+				H, W = arr.shape
+				with rasterio.open(
+					self.gpkg_path, "w",
+					driver="GPKG",
+					raster_table=layer_name,   # the raster layer name
+					width=W, height=H, count=1, dtype="uint8",
+					crs=None, transform=Affine.identity(),
+					tiled=True, compress="LZW", nodata=0
+				) as dst:
+					dst.write(arr, 1)
+
+		gdf_polys.to_file(self.gpkg_path, layer="polygons", driver="GPKG")
+		_write_mask("black_mask", black_mask)
+		_write_mask("unclassified_mask", unclass_mask)
+
+		seg_frac = 100 - self.black_unseg_fraction - self.unclassified_fraction
+
+		mod_row = df["scene_id"].eq(self.scene_id)
+		df.loc[mod_row, ["segmented", "n_polygons","pct_black","pct_segmented"]] = [True, len(gdf_polys), self.black_unseg_fraction, seg_frac]
+
+		tmp = MAIN_CSV_PATH + ".tmp"
+		df.to_csv(tmp, index=False, lineterminator="\n")
+		os.replace(tmp, MAIN_CSV_PATH)
+
 
 	def show_gdf_in_pixel_space(self, gdf_pixels, idx=None, pad_px=50):
 
@@ -604,26 +675,126 @@ class PolygonExtractor:
 		return quarters
 	
 	#endregion
+
+	#Post-processing
+
+	def process_unsegmented_area(self, segmented_gdf, count_touched_pixels=False):
+		
+		with rasterio.open(self.norm_image_path) as src:
+			arr = src.read([1,2,3]) if src.count >= 3 else src.read()
+			img = np.transpose(arr[:3], (1,2,0)) if arr.ndim==3 else arr
+			H, W = img.shape[:2]
+
+		transform = Affine.identity()
+
+		shapes = [(geom, 1) for geom in segmented_gdf.geometry]
+
+		# Strict (no fattening): all_touched=False means center-in-polygon
+		# counts = rasterize(
+		# 	shapes,
+		# 	out_shape=(H, W),
+		# 	transform=transform,
+		# 	fill=0,
+		# 	all_touched=count_touched_pixels,
+		# 	dtype="uint16",
+		# 	merge_alg=MergeAlg.add      # sum overlaps
+		# )
+
+		# Binary “has polygon” mask (strict)
+		mask = rasterize(
+			shapes,
+			out_shape=(H, W),
+			transform=transform,
+			fill=0,
+			all_touched=count_touched_pixels,
+			dtype="uint8",
+			default_value=1             # mark covered pixels as 1
+			# merge_alg default (replace) is fine here
+		)
+
+		mask_bool = (mask == 1)
+		masked_img = img.copy()
+		masked_img[mask_bool] = 0
+
+		unseg_mask_bool = ~mask_bool
+		black_rgb = (masked_img[..., 0] < 30) & (masked_img[..., 1] < 30) & (masked_img[..., 2] < 30)
+		black_in_leftover = black_rgb & unseg_mask_bool
+		fraction_leftover = 100 * (black_in_leftover.sum() / (unseg_mask_bool).size)
+		self.black_unseg_fraction = 100 * fraction_leftover / (100.0 * (unseg_mask_bool.sum() / unseg_mask_bool.size))
+		unseg_no_black = unseg_mask_bool & (~black_in_leftover)
+
+		unseg_no_small = PolygonExtractor.small_line_and_area_removal(unseg_no_black.copy(), erosion=2)
+		unseg_final = label(unseg_no_small, connectivity=2)
+		unseg_final_no_small = remove_small_objects(unseg_final, min_size=30)
+		unseg_final_mask = unseg_final_no_small > 0
+		unclassified = unseg_no_black & (~unseg_final_mask)
+		self.unclassified_fraction = (100 * unclassified.sum()/unseg_no_black.size)
+
+		unseg_labelled = label(unseg_final_mask, connectivity=2)
+		unseg_gdf = self.masks_to_shapes(unseg_labelled, mask_dict_is_arr=True)
+
+		return unseg_gdf, black_in_leftover, unclassified
+
+	@staticmethod
+	def small_line_and_area_removal(unseg_mask, erosion):
+
+		def touches_true_4(mask, r, c):
+			H, W = mask.shape
+			return (
+				(r > 0     and mask[r-1, c]) or  
+				(r < H-1   and mask[r+1, c]) or  
+				(c > 0     and mask[r, c-1]) or  
+				(c < W-1   and mask[r, c+1]) or
+				(r > 0     and  c > 0 and mask[r-1, c-1]) or  
+				(r < H-1   and  c > 0 and mask[r+1, c-1]) or  
+				(r > 0     and  c < W-1 and mask[r-1, c+1]) or  
+				(r < W-1   and  c < W-1 and mask[r+1, c+1])     
+			)
+
+		dt = distance_transform_edt(unseg_mask)
+		dti = np.around(dt).astype(np.uint8)
+		edge_masks = []
+
+		for i in range (erosion):
+			edge_masks.append(dti == i+1)
+
+		edge_masks.append(dti >= erosion)
+
+		for i in range(erosion, 0, -1):
+			for r, c in zip(*np.where(edge_masks[i-1])):
+				is_touching = touches_true_4(edge_masks[i], r, c) or touches_true_4(edge_masks[-1], r, c)
+				unseg_mask[r,c] = edge_masks[i-1][r,c] = is_touching
+		return unseg_mask
+	
+	
+
+
+
+	#endregion
 	
 
 #region Main
 
 if __name__ == "__main__":
-	fire_name = "santa-rosa"
-	fire_type = "wildfire"
-	pic_number = "0014"
 
-	pre_image_f = f"../fires/{fire_name}/images/{fire_name}-{fire_type}_0000{pic_number}_pre_disaster.tif"
-	post_image_f = f"../fires/{fire_name}/images/{fire_name}-{fire_type}_0000{pic_number}_post_disaster.tif"
-	
-	t0 = time.perf_counter()
+	df = pd.read_csv(MAIN_CSV_PATH)
 
-	extractor = PolygonExtractor(pre_image_f, mask_size_threshold=15, mask_min_hole_area=10, fire_name=fire_name, pic_number=pic_number)
-	gdf = extractor.run_SAM_on_image()
+	num_to_segment = 50
 
-	extractor.show_gdf_in_pixel_space(gdf)
+	for i in range(num_to_segment):
+		row = df.iloc[i]
 
-	elapsed = time.perf_counter() - t0
-	print(f"Elapsed time: {(elapsed/60):.2f} mins")
+		if row["segmented"] == True:
+			continue
+
+		t0 = time.perf_counter()
+
+		extractor = PolygonExtractor(row)
+		gdf = extractor.run_SAM_on_image()
+
+		extractor.show_gdf_in_pixel_space(gdf)
+
+		elapsed = time.perf_counter() - t0
+		print(f"Elapsed time: {(elapsed/60):.2f} mins")
 
 #endregion
