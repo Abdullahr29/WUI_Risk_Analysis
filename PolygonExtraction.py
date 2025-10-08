@@ -8,6 +8,7 @@ from rasterio.windows import Window
 from rasterio import features
 from rasterio.features import rasterize, shapes
 from rasterio.enums import MergeAlg
+from rasterio.errors import NotGeoreferencedWarning
 from affine import Affine
 import shapely
 import matplotlib.pyplot as plt
@@ -20,22 +21,53 @@ from skimage.feature import graycomatrix, graycoprops
 from scipy.ndimage import distance_transform_edt
 from skimage.morphology import reconstruction, remove_small_objects
 from skimage.measure import label
+from pathlib import Path
 
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:256"
 import numpy as np
+from osgeo import gdal
 import torch
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 import gc
 import pickle
 import time
+from datetime import datetime, timezone
+
 import warnings
 warnings.filterwarnings(
 	"ignore", 
 	module=r".*sam2.*", 
 	message=r".*cannot import name '_C'.*"
 )
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    module=r".*pandas.*",
+    message=r".*DataFrame concatenation with empty or all-NA.*"
+)
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module=r"pyogrio\.geopandas",
+    message=r".*'crs' was not provided.*"
+)
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module=r"geopandas\.io\.file",
+    message=r".*'crs' was not provided.*"
+)
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r".*DataFrame concatenation with empty or all-NA entries is deprecated.*",
+)
+warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
+
 MAIN_CSV_PATH = "xBD_WUI_Analysis.csv"
+
+
 
 #endregion
 
@@ -47,7 +79,7 @@ class PolygonExtractor:
 	def __init__(self, row, mask_size_threshold=15, mask_min_hole_area=10, tile_quarter=True):
 		self.csv_row = row
 		self.image_path = row["pre_image_path"]
-		self.gpkg_path = row["gpkg_path"]
+		self.polygon_path = row["polygon_path"]
 		self.scene_id = row["scene_id"]
 
 		self.norm_image_path = f"{self.scene_id}_norm_img.tif"
@@ -101,7 +133,6 @@ class PolygonExtractor:
 
 				mask_table = mask_generator.generate(current_image)
 				
-				print(f"CUDA memory allocated: {torch.cuda.memory_allocated()/(1024**3):.2f} GB")
 				mask_generator.predictor.reset_predictor()
 				del mask_generator
 
@@ -125,7 +156,7 @@ class PolygonExtractor:
 
 		print(f"Total polygons before deduplication: {len(final_gdf)}")
 
-		self.save_gpkg_and_update_csv(final_gdf.copy(), black_mask, unclassified_mask)
+		self.save_pickle_and_update_csv(final_gdf.copy(), black_mask, unclassified_mask)
 
 		return final_gdf
 	
@@ -406,34 +437,30 @@ class PolygonExtractor:
 
 	#region Utilitly Functions
 
-	def save_gpkg_and_update_csv(self, gdf_polys, black_mask, unclass_mask):
+	def save_pickle_and_update_csv(self, gdf_polys, black_mask, unclass_mask):
 
-		def _write_mask(layer_name, mask):
-				arr = mask.astype("uint8")    # 0/1 (or class ids for class_mask)
-				H, W = arr.shape
-				with rasterio.open(
-					self.gpkg_path, "w",
-					driver="GPKG",
-					raster_table=layer_name,   # the raster layer name
-					width=W, height=H, count=1, dtype="uint8",
-					crs=None, transform=Affine.identity(),
-					tiled=True, compress="LZW", nodata=0
-				) as dst:
-					dst.write(arr, 1)
+		data = {
+			"polygons": [gdf_polys],
+			"norm_image": [self.img],
+			"black_mask": [black_mask],
+			"unclassified_mask": [unclass_mask]
+		}
 
-		gdf_polys.to_file(self.gpkg_path, layer="polygons", driver="GPKG")
-		_write_mask("black_mask", black_mask)
-		_write_mask("unclassified_mask", unclass_mask)
+		df = pd.DataFrame(data)
+
+		with open(self.polygon_path, "wb") as f:
+			pickle.dump(df, f)
 
 		seg_frac = 100 - self.black_unseg_fraction - self.unclassified_fraction
 
 		mod_row = df["scene_id"].eq(self.scene_id)
-		df.loc[mod_row, ["segmented", "n_polygons","pct_black","pct_segmented"]] = [True, len(gdf_polys), self.black_unseg_fraction, seg_frac]
+		df.loc[mod_row, ["segmented", "n_polygons","pct_black","pct_segmented", "date_time_segmentation"]] = [True, len(gdf_polys), self.black_unseg_fraction, seg_frac, datetime.now(timezone.utc).isoformat(timespec="seconds")]
 
 		tmp = MAIN_CSV_PATH + ".tmp"
 		df.to_csv(tmp, index=False, lineterminator="\n")
 		os.replace(tmp, MAIN_CSV_PATH)
 
+		os.remove(self.norm_image_path)
 
 	def show_gdf_in_pixel_space(self, gdf_pixels, idx=None, pad_px=50):
 
@@ -502,6 +529,98 @@ class PolygonExtractor:
 		ax.axis("off")
 			
 		plt.tight_layout(); plt.show()
+
+
+	def save_gpkg_and_update_csv(self, gdf_polys, black_mask, unclass_mask):
+
+		gdf_polys.set_crs(None, allow_override=True, inplace=True)
+		gdf_polys.to_file(self.polygon_path, layer="polygons", driver="GPKG")
+		
+		PolygonExtractor.gpkg_append_multiband(self.polygon_path, "norm_image", self.img)
+		PolygonExtractor.gpkg_append_raster(self.polygon_path, "black_mask", black_mask.astype("uint8"))
+		PolygonExtractor.gpkg_append_raster(self.polygon_path, "unclassified_mask", unclass_mask.astype("uint8"))
+
+		seg_frac = 100 - self.black_unseg_fraction - self.unclassified_fraction
+
+		mod_row = df["scene_id"].eq(self.scene_id)
+		df.loc[mod_row, ["segmented", "n_polygons","pct_black","pct_segmented", "date_time_segmentation"]] = [True, len(gdf_polys), self.black_unseg_fraction, seg_frac, datetime.now(timezone.utc).isoformat(timespec="seconds")]
+
+		tmp = MAIN_CSV_PATH + ".tmp"
+		df.to_csv(tmp, index=False, lineterminator="\n")
+		os.replace(tmp, MAIN_CSV_PATH)
+
+		os.remove(self.norm_image_path)
+
+		
+	@staticmethod
+	def gpkg_append_raster(polygon_path, layer_name, array_uint8, nodata=0):
+		H, W = array_uint8.shape
+		# 1) build in-memory raster
+		mem = gdal.GetDriverByName("MEM").Create("", W, H, 1, gdal.GDT_Byte)
+		mem.GetRasterBand(1).WriteArray(array_uint8)
+		mem.GetRasterBand(1).SetNoDataValue(nodata)
+		# pixel-space identity geotransform; change if you have real georeferencing
+		mem.SetGeoTransform((0, 1, 0, 0, 0, -1))  # origin (0,0), +1 x pixel, -1 y pixel
+
+		# 2) append into GPKG as a new raster table
+		gdal.Translate(
+			destName=f"GPKG:{polygon_path}:{layer_name}",
+			srcDS=mem,
+			format="GPKG",
+			creationOptions=[
+				f"RASTER_TABLE={layer_name}",
+				"APPEND_SUBDATASET=YES",
+				# Optional tiling (if your GDAL supports it):
+				# "BLOCKXSIZE=256", "BLOCKYSIZE=256", "TILE_FORMAT=PNG"
+			],
+		)
+		mem = None
+
+	@staticmethod
+	def gpkg_append_multiband(polygon_path, layer_name, img_uint8, *, nodata=None):
+		gdal.UseExceptions()
+		polygon_path = str(Path(polygon_path).resolve())
+
+		arr = np.asarray(img_uint8)
+		if arr.ndim != 3:
+			raise ValueError("img must be 3D (H,W,C) or (C,H,W)")
+		# normalize to (H, W, C)
+		if arr.shape[0] <= 5 and arr.shape[2] > 5:  # (C,H,W) -> (H,W,C)
+			arr = np.transpose(arr, (1, 2, 0))
+		H, W, C = arr.shape
+		arr = np.ascontiguousarray(arr.astype(np.uint8))
+
+		# MEM dataset
+		mem = gdal.GetDriverByName("MEM").Create("", W, H, C, gdal.GDT_Byte)
+		# pixel-space north-up (no CRS)
+		mem.SetGeoTransform((0, 1, 0, 0, 0, -1))
+		for b in range(C):
+			rb = mem.GetRasterBand(b + 1)
+			rb.WriteArray(arr[..., b])
+			if nodata is not None:
+				rb.SetNoDataValue(nodata)
+		if C >= 3:
+			mem.GetRasterBand(1).SetColorInterpretation(gdal.GCI_RedBand)
+			mem.GetRasterBand(2).SetColorInterpretation(gdal.GCI_GreenBand)
+			mem.GetRasterBand(3).SetColorInterpretation(gdal.GCI_BlueBand)
+
+		# Append into GPKG
+		dest = f"GPKG:{polygon_path}:{layer_name}"
+		out = gdal.Translate(
+			destName=dest,
+			srcDS=mem,
+			format="GPKG",
+			creationOptions=[
+				f"RASTER_TABLE={layer_name}",
+				"APPEND_SUBDATASET=YES",
+			],
+		)
+		if out is None:
+			raise RuntimeError(f"gdal.Translate failed for {dest}")
+		# cleanup
+		out = None
+		mem = None
+
 
 	@staticmethod
 	def clean_cache(): 
@@ -676,7 +795,7 @@ class PolygonExtractor:
 	
 	#endregion
 
-	#Post-processing
+	#region Post-processing
 
 	def process_unsegmented_area(self, segmented_gdf, count_touched_pixels=False):
 		
@@ -733,6 +852,8 @@ class PolygonExtractor:
 		unseg_labelled = label(unseg_final_mask, connectivity=2)
 		unseg_gdf = self.masks_to_shapes(unseg_labelled, mask_dict_is_arr=True)
 
+		print(f"Unsegmented area processed, {len(unseg_gdf)} masks kept")
+
 		return unseg_gdf, black_in_leftover, unclassified
 
 	@staticmethod
@@ -779,6 +900,19 @@ if __name__ == "__main__":
 
 	df = pd.read_csv(MAIN_CSV_PATH)
 
+	sid = "santa-rosa_0014"
+
+	# Get exactly one row as a Series
+	row = df.loc[df["scene_id"].eq(sid)].iloc[0]   
+
+	t0 = time.perf_counter()
+
+	extractor = PolygonExtractor(row)
+	extractor.run_SAM_on_image()
+
+	elapsed = time.perf_counter() - t0
+	print(f"Elapsed time: {(elapsed/60):.2f} mins")
+
 	num_to_segment = 50
 
 	for i in range(num_to_segment):
@@ -790,9 +924,7 @@ if __name__ == "__main__":
 		t0 = time.perf_counter()
 
 		extractor = PolygonExtractor(row)
-		gdf = extractor.run_SAM_on_image()
-
-		extractor.show_gdf_in_pixel_space(gdf)
+		extractor.run_SAM_on_image()
 
 		elapsed = time.perf_counter() - t0
 		print(f"Elapsed time: {(elapsed/60):.2f} mins")
