@@ -446,13 +446,14 @@ class PolygonExtractor:
 			"unclassified_mask": [unclass_mask]
 		}
 
-		df = pd.DataFrame(data)
+		dat = pd.DataFrame(data)
 
 		with open(self.polygon_path, "wb") as f:
-			pickle.dump(df, f)
+			pickle.dump(dat, f)
 
 		seg_frac = 100 - self.black_unseg_fraction - self.unclassified_fraction
 
+		df = pd.read_csv(MAIN_CSV_PATH)
 		mod_row = df["scene_id"].eq(self.scene_id)
 		df.loc[mod_row, ["segmented", "n_polygons","pct_black","pct_segmented", "date_time_segmentation"]] = [True, len(gdf_polys), self.black_unseg_fraction, seg_frac, datetime.now(timezone.utc).isoformat(timespec="seconds")]
 
