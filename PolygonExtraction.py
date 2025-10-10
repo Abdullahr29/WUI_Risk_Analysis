@@ -104,6 +104,9 @@ class PolygonExtractor:
 		for position in self.tile_windows:
 			
 			current_image = np.transpose(self.tiles[position]['image'], (1,2,0))
+			if (current_image.max() < 0.01):
+				print(f"Position {position} is black, skipping...")
+				continue
 
 			with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
 				
@@ -150,7 +153,7 @@ class PolygonExtractor:
 			PolygonExtractor.clean_cache()
 
 		unsegmented_gdf, black_mask, unclassified_mask = self.process_unsegmented_area(final_gdf)
-		final_gdf = pd.concat([unsegmented_gdf, final_gdf], ignore_index=True)
+		final_gdf = pd.concat([final_gdf, unsegmented_gdf], ignore_index=True)
 
 		final_gdf.attrs["pixel_transform"] = (0,1,0, 0,0,1)	
 
@@ -839,8 +842,7 @@ class PolygonExtractor:
 		unseg_mask_bool = ~mask_bool
 		black_rgb = (masked_img[..., 0] < 30) & (masked_img[..., 1] < 30) & (masked_img[..., 2] < 30)
 		black_in_leftover = black_rgb & unseg_mask_bool
-		fraction_leftover = 100 * (black_in_leftover.sum() / (unseg_mask_bool).size)
-		self.black_unseg_fraction = 100 * fraction_leftover / (100.0 * (unseg_mask_bool.sum() / unseg_mask_bool.size))
+		self.black_unseg_fraction = 100 * (black_in_leftover.sum() / (unseg_mask_bool).size)
 		unseg_no_black = unseg_mask_bool & (~black_in_leftover)
 
 		unseg_no_small = PolygonExtractor.small_line_and_area_removal(unseg_no_black.copy(), erosion=2)
@@ -900,20 +902,6 @@ class PolygonExtractor:
 if __name__ == "__main__":
 
 	df = pd.read_csv(MAIN_CSV_PATH)
-
-	sid = "santa-rosa_0014"
-
-	# Get exactly one row as a Series
-	row = df.loc[df["scene_id"].eq(sid)].iloc[0]   
-
-	t0 = time.perf_counter()
-
-	extractor = PolygonExtractor(row)
-	extractor.run_SAM_on_image()
-
-	elapsed = time.perf_counter() - t0
-	print(f"Elapsed time: {(elapsed/60):.2f} mins")
-
 	num_to_segment = 50
 
 	for i in range(num_to_segment):
