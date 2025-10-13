@@ -82,7 +82,7 @@ class PolygonExtractor:
 		self.polygon_path = row["polygon_path"]
 		self.scene_id = row["scene_id"]
 
-		self.norm_image_path = f"{self.scene_id}_norm_img.tif"
+		self.norm_image_path = f"./Temporary_Data/{self.scene_id}_norm_img.tif"
 		self.mask_size_threshold = mask_size_threshold
 		self.mask_min_hole_area = mask_min_hole_area
 		self.tile_quarter = tile_quarter
@@ -98,8 +98,11 @@ class PolygonExtractor:
 
 		if self.tile_quarter:
 			self.__split_image_into_quarters()
+			print(f"Processing image {self.scene_id} in 4 tiles...")
 		else:
 			self.__split_image_into_nine()
+			print(f"Processing image {self.scene_id} in 9 tiles...")
+
 
 		for position in self.tile_windows:
 			
@@ -240,7 +243,7 @@ class PolygonExtractor:
 			props = self.extract_region_properties(mask, shap, img_rows, img_cols)
 
 			if props is None:
-				print(f"Skipping mask {i} due to region properties extraction failure")
+				#print(f"Skipping mask {i} due to region properties extraction failure")
 				continue
 			
 			if not mask_dict_is_arr:
@@ -458,7 +461,7 @@ class PolygonExtractor:
 
 		df = pd.read_csv(MAIN_CSV_PATH)
 		mod_row = df["scene_id"].eq(self.scene_id)
-		df.loc[mod_row, ["segmented", "n_polygons","pct_black","pct_segmented", "date_time_segmentation"]] = [True, len(gdf_polys), self.black_unseg_fraction, seg_frac, datetime.now(timezone.utc).isoformat(timespec="seconds")]
+		df.loc[mod_row, ["segmented", "n_polygons","pct_black","pct_segmented", "date_time_segmentation"]] = [True, len(gdf_polys), self.black_unseg_fraction, seg_frac, datetime.now(timezone.utc).isoformat(timespec="minutes")]
 
 		tmp = MAIN_CSV_PATH + ".tmp"
 		df.to_csv(tmp, index=False, lineterminator="\n")
