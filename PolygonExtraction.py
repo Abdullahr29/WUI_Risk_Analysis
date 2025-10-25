@@ -461,7 +461,7 @@ class PolygonExtractor:
 
 		df = pd.read_csv(MAIN_CSV_PATH)
 		mod_row = df["scene_id"].eq(self.scene_id)
-		df.loc[mod_row, ["segmented", "n_polygons","pct_black","pct_segmented", "date_time_segmentation"]] = [True, len(gdf_polys), self.black_unseg_fraction, seg_frac, datetime.now(timezone.utc).isoformat(timespec="minutes")]
+		df.loc[mod_row, ["segmented", "n_polygons","pct_black","pct_segmented", "date_time_segmentation"]] = [True, len(gdf_polys), self.black_unseg_fraction, seg_frac, datetime.now(timezone.utc).isoformat(timespec="seconds")]
 
 		tmp = MAIN_CSV_PATH + ".tmp"
 		df.to_csv(tmp, index=False, lineterminator="\n")
@@ -537,7 +537,7 @@ class PolygonExtractor:
 			
 		plt.tight_layout(); plt.show()
 
-
+	# Currently unused; for GPKG export
 	def save_gpkg_and_update_csv(self, gdf_polys, black_mask, unclass_mask):
 
 		gdf_polys.set_crs(None, allow_override=True, inplace=True)
@@ -845,7 +845,7 @@ class PolygonExtractor:
 		unseg_mask_bool = ~mask_bool
 		black_rgb = (masked_img[..., 0] < 30) & (masked_img[..., 1] < 30) & (masked_img[..., 2] < 30)
 		black_in_leftover = black_rgb & unseg_mask_bool
-		self.black_unseg_fraction = 100 * (black_in_leftover.sum() / (unseg_mask_bool).size)
+		self.black_unseg_fraction = 100 * (black_in_leftover.sum() / unseg_mask_bool.size)
 		unseg_no_black = unseg_mask_bool & (~black_in_leftover)
 
 		unseg_no_small = PolygonExtractor.small_line_and_area_removal(unseg_no_black.copy(), erosion=2)
@@ -853,7 +853,7 @@ class PolygonExtractor:
 		unseg_final_no_small = remove_small_objects(unseg_final, min_size=30)
 		unseg_final_mask = unseg_final_no_small > 0
 		unclassified = unseg_no_black & (~unseg_final_mask)
-		self.unclassified_fraction = (100 * unclassified.sum()/unseg_no_black.size)
+		self.unclassified_fraction = 100 * (unclassified.sum()/unseg_no_black.size)
 
 		unseg_labelled = label(unseg_final_mask, connectivity=2)
 		unseg_gdf = self.masks_to_shapes(unseg_labelled, mask_dict_is_arr=True)
