@@ -66,7 +66,7 @@ warnings.filterwarnings(
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
 MAIN_CSV_PATH = "xBD_WUI_Analysis.csv"
-
+CONFIG_FILE_PATH = "config.toml"
 
 
 #endregion
