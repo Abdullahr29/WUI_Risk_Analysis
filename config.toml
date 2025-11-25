@@ -1,9 +1,15 @@
 [datapaths]
-data_root = "/Users/abdullah/OneDrive - King's College London/Datasets/WUI_Imagery/"
-remote_root = "onedrive:Datasets/WUI_Imagery"
+home_root = "/Users/abdullah/OneDrive - King's College London/"
+remote_root = "onedrive:"
+data_root = "Datasets/WUI_Imagery/"
 
-xBD_images_path = "xBD_Dataset/fires/"
-xBD_analysed_path = "xBD_Dataset/Analysed_Images/"
+xBD_path = "xBD_Dataset/"
+maxar_path = "Maxar/"
 
-Maxar_images_path = "Maxar/fires/"
-Maxar_analysed_path = "Maxar/Analysed_Images/" 
+images_path = "fires/"
+analysis_path = "Analysed_Images/"
+
+main_csv_path = "Data/xBD_WUI_Analysis.csv"
+
+[local_vars]
+on_remote = false

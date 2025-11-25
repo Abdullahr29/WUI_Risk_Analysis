@@ -17,6 +17,8 @@ from rasterio.features import rasterize
 from rasterio.enums import MergeAlg
 from affine import Affine  
 
+from Utils.io_utils import RemoteIO
+
 CONFIG_FILE_PATH = "../config.toml"
 MAIN_CSV_PATH = "../Data/xBD_WUI_Analysis.csv"
 TEMP_EXPORT_PATH = "../Temporary_Files/"
@@ -46,14 +48,28 @@ CLASS_MAP = {
     15: "Non-combustible: Destroyed structure",
     16: "Non-combustible: Burnt vegetation",
     17: "Unclassified",
+    18: "Shadow",
+    19: "Cloud",
+    20: "Smoke",
+    21: "Multi-object",
 }
 
 class DataLoader:
     def __init__(self):
 
         with open(CONFIG_FILE_PATH, "rb") as f:
-            data_config = tomllib.load(f)
-        self.data_config = data_config["datapaths"]
+            config = tomllib.load(f)
+        
+        self.data_config = config["datapaths"]
+
+        on_remote = config["local_vars"]["on_remote"]
+
+        self.on_remote = on_remote
+
+        if self.on_remote:
+            self.data_path = f"{self.data_config["remote_root"]}{self.data_config["data_root"]}"
+        else:
+            self.data_path = f"{self.data_config["home_root"]}{self.data_config["data_root"]}"
 
         self.xBD_data = pd.read_csv(MAIN_CSV_PATH)
 
@@ -82,7 +98,7 @@ class DataLoader:
         else:
             scene_path = scene_info["post_image_path"]
 
-        full_path = f"{self.data_config["data_root"]}{self.data_config["xBD_images_path"]}{scene_path}"
+        full_path = self._get_file_path(scene_path)
         inspect_tif(full_path)
 
 
@@ -115,7 +131,7 @@ class DataLoader:
                 labels_path = scene_info["pre_label_path"]
             else:
                 labels_path = scene_info["post_label_path"]
-            full_labels_path = f"{self.data_config["data_root"]}{self.data_config["xBD_images_path"]}{labels_path}"
+            full_labels_path = self._get_file_path(labels_path)
 
             with open(full_labels_path, 'r') as f:
                 labels_dict = json.load(f)
@@ -181,6 +197,9 @@ class DataLoader:
     def ClearCurrentScene(self):
         if self.current_norm_image_path and os.path.exists(self.current_norm_image_path):
             os.remove(self.current_norm_image_path)
+        
+        if self.on_remote and self.current_scene_image_path and os.path.exists(self.current_scene_image_path):
+            os.remove(self.current_scene_image_path)
 
         self.current_scene_id = None
         self.current_scene_info = None
@@ -201,7 +220,7 @@ class DataLoader:
             scene_path = scene_info["pre_image_path"]
         else:
             scene_path = scene_info["post_image_path"]
-        full_path = f"{self.data_config["data_root"]}{self.data_config["xBD_images_path"]}{scene_path}"
+        full_path = self._get_file_path(scene_path)
 
         self.current_scene_image_path = full_path
         self.is_current_scene_pre = pre_image_path
@@ -209,7 +228,7 @@ class DataLoader:
         if scene_info["segmented"] == True:
             scene_polygon_path = scene_info["polygon_path"]
 
-            with open(f"{self.data_config["data_root"]}{self.data_config["xBD_analysed_path"]}{scene_polygon_path}", 'rb') as f:
+            with open(self._get_file_path(scene_polygon_path, is_image_or_label=False), 'rb') as f:
                 scene_analysis_dict = pickle.load(f)
 
             scene_polygon_gdf = scene_analysis_dict.polygons.iloc[0]
@@ -221,10 +240,20 @@ class DataLoader:
 
         return scene_polygon_gdf, norm_image_path, full_path, scene_info, scene_analysis_dict
     
+    def _get_file_path(self, scene_path, is_xBD=True, is_image_or_label=True):
+        source_path = self.data_config["xBD_path"] if is_xBD else self.data_config["maxar_path"]
+        type_path = self.data_config["images_path"] if is_image_or_label else self.data_config["analysis_path"]
 
+        full_path = f"{self.data_path}{source_path}{type_path}{scene_path}"
 
+        if self.on_remote:
+            final_path = RemoteIO.get_file(full_path, f"{TEMP_EXPORT_PATH}{os.path.basename(scene_path)}")
+        else:
+            final_path = full_path
 
+        return final_path
 
+    
 def inspect_tif(image_path):
     with rasterio.open(image_path) as src:
         print(f"\n📂 Inspecting: {image_path}")
