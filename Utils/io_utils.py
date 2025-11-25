@@ -3,7 +3,7 @@ from pathlib import Path
 import toml
 import subprocess
 
-CONFIG_FILE_PATH = "config.toml"
+CONFIG_FILE_PATH = "../config.toml"
 
 RCLONE = "rclone"                
 REMOTE = "onedrive:Datasets/WUI_Imagery"

@@ -1,0 +1,9 @@
+[datapaths]
+data_root = "/Users/abdullah/OneDrive - King's College London/Datasets/WUI_Imagery/"
+remote_root = "onedrive:Datasets/WUI_Imagery"
+
+xBD_images_path = "xBD_Dataset/fires/"
+xBD_analysed_path = "xBD_Dataset/Analysed_Images/"
+
+Maxar_images_path = "Maxar/fires/"
+Maxar_analysed_path = "Maxar/Analysed_Images/" 

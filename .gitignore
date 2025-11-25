@@ -3,5 +3,4 @@
 *-checkpoint.py
 __pycache__/
 *.pyc
-config.toml
 .DS_Store
