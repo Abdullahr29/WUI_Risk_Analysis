@@ -34,6 +34,8 @@ import pickle
 import time
 from datetime import datetime, timezone
 
+from Utils.image_utils import DataLoader
+
 import warnings
 warnings.filterwarnings(
 	"ignore", 
@@ -65,9 +67,7 @@ warnings.filterwarnings(
 )
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
-MAIN_CSV_PATH = "xBD_WUI_Analysis.csv"
-CONFIG_FILE_PATH = "config.toml"
-
+MAIN_CSV_PATH = "../xBD_WUI_Analysis.csv"
 
 #endregion
 
@@ -905,7 +905,7 @@ class PolygonExtractor:
 if __name__ == "__main__":
 
 	df = pd.read_csv(MAIN_CSV_PATH)
-	num_to_segment = 50
+	num_to_segment = 5
 
 	for i in range(num_to_segment):
 		row = df.iloc[i]
