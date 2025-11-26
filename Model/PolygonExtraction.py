@@ -67,7 +67,7 @@ warnings.filterwarnings(
 )
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
-MAIN_CSV_PATH = "../xBD_WUI_Analysis.csv"
+MAIN_CSV_PATH = "../Data/xBD_WUI_Analysis.csv"
 
 #endregion
 
