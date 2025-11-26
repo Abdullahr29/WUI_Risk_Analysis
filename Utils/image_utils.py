@@ -16,12 +16,41 @@ from shapely.affinity import affine_transform
 from rasterio.features import rasterize
 from rasterio.enums import MergeAlg
 from affine import Affine  
+from pathlib import Path
 
 from Utils.io_utils import RemoteIO
 
-CONFIG_FILE_PATH = "../config.toml"
-MAIN_CSV_PATH = "../Data/xBD_WUI_Analysis.csv"
-TEMP_EXPORT_PATH = "../Temporary_Files/"
+def get_project_root(marker="Utils"):
+    """
+    Walk upward until we find the project root, identified by containing the 'Utils' folder.
+    This works regardless of where code is executed from (script, notebook, HPC).
+    """
+    current = Path().resolve()
+
+    for parent in [current] + list(current.parents):
+        if (parent / marker).exists():
+            return parent
+
+    raise RuntimeError("Could not find project root")
+
+# Cache so we don't recompute
+_PROJECT_ROOT = str(get_project_root())
+
+def get_project_root_path() -> str:
+    return _PROJECT_ROOT
+
+def get_data_path() -> str:
+    return _PROJECT_ROOT + "/Data/"
+
+def get_temp_path() -> str:
+    return _PROJECT_ROOT + "/Temporary_Files/"
+
+def get_main_csv_path() -> str:
+    return _PROJECT_ROOT + "/Data/xBD_WUI_Analysis.csv"
+
+def get_config_path() -> str:
+    return _PROJECT_ROOT + "/config.toml"
+
 
 damage_colors = {
     "no-damage": "cyan",
@@ -57,7 +86,7 @@ CLASS_MAP = {
 class DataLoader:
     def __init__(self):
 
-        with open(CONFIG_FILE_PATH, "rb") as f:
+        with open(get_config_path(), "rb") as f:
             config = tomllib.load(f)
         
         self.data_config = config["datapaths"]
@@ -71,7 +100,7 @@ class DataLoader:
         else:
             self.data_path = f"{self.data_config["home_root"]}{self.data_config["data_root"]}"
 
-        self.xBD_data = pd.read_csv(MAIN_CSV_PATH)
+        self.xBD_data = pd.read_csv(get_main_csv_path())
 
         self.current_scene_id = None
         self.current_scene_info = None
@@ -211,6 +240,20 @@ class DataLoader:
         self.current_scene_image_path = None
         self.current_norm_image_path = None
         self.is_current_scene_pre = None
+    
+    def UploadImagePolygons(self, polygon_path, is_xBD=True):
+        source_path = self.data_config["xBD_path"] if is_xBD else self.data_config["maxar_path"]
+
+        dest_path = f"{self.data_path}{source_path}{self.data_config["analysis_path"]}{polygon_path}"
+        src_path = f"{get_temp_path()}{polygon_path}"
+
+        if self.on_remote:
+            RemoteIO.put_file(src_path, dest_path)
+        else:
+            os.replace(src_path, dest_path)
+
+        os.remove(src_path)
+
 
     def _get_scene(self, scene_info, with_norm_image=False, pre_image_path=True):
         self.ClearCurrentScene()
@@ -240,7 +283,7 @@ class DataLoader:
             self.current_scene_polygons = scene_polygon_gdf
 
         if with_norm_image:
-            norm_image_path = normalize_to_uint8_per_band(full_path, export=True, export_path=f"{TEMP_EXPORT_PATH}{scene_info["scene_id"]}_norm_image.tif", return_path=True)
+            norm_image_path = normalize_to_uint8_per_band(full_path, export=True, export_path=f"{get_temp_path()}{scene_info["scene_id"]}_norm_image.tif", return_path=True)
             self.current_norm_image_path = norm_image_path
 
         return scene_polygon_gdf, norm_image_path, full_path, scene_info, scene_analysis_dict
@@ -253,7 +296,7 @@ class DataLoader:
 
         if self.on_remote:
             
-            dest_path = f"{TEMP_EXPORT_PATH}{os.path.basename(scene_path)}"
+            dest_path = f"{get_temp_path()}{os.path.basename(scene_path)}"
 
             if not os.path.exists(dest_path):
                 dest_path = RemoteIO.get_file(full_path, dest_path)
