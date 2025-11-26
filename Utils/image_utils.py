@@ -78,6 +78,8 @@ class DataLoader:
         self.current_scene_image_path = None
         self.current_norm_image_path = None
         self.is_current_scene_pre = None
+
+        self.remote_scene_paths = []
     
     def GetSceneFromID(self, scene_id, with_norm_image=True, pre_image=True):
         scene_info = self.xBD_data[self.xBD_data["scene_id"] == scene_id].iloc[0]
@@ -176,7 +178,7 @@ class DataLoader:
             return image
         
         
-    def PlotImageFromLoc(self, loc, norm_image=True, pre_image=True, with_labels=False, pre_labels=True):
+    def PlotImageFromLoc(self, loc, norm_image=True, pre_image=True, with_labels=True, pre_labels=False):
         scene_info = self.xBD_data.iloc[loc]
         return self.PlotImageFromSceneID(scene_info["scene_id"], norm_image=norm_image, pre_image=pre_image, with_labels=with_labels, pre_labels=pre_labels)
 
@@ -198,9 +200,12 @@ class DataLoader:
         if self.current_norm_image_path and os.path.exists(self.current_norm_image_path):
             os.remove(self.current_norm_image_path)
         
-        if self.on_remote and self.current_scene_image_path and os.path.exists(self.current_scene_image_path):
-            os.remove(self.current_scene_image_path)
-
+        if self.on_remote:
+            for path in self.remote_scene_paths:
+                if os.path.exists(path):
+                    os.remove(path)
+        
+        self.remote_scene_paths = []
         self.current_scene_id = None
         self.current_scene_info = None
         self.current_scene_image_path = None
@@ -247,7 +252,14 @@ class DataLoader:
         full_path = f"{self.data_path}{source_path}{type_path}{scene_path}"
 
         if self.on_remote:
-            final_path = RemoteIO.get_file(full_path, f"{TEMP_EXPORT_PATH}{os.path.basename(scene_path)}")
+            
+            dest_path = f"{TEMP_EXPORT_PATH}{os.path.basename(scene_path)}"
+
+            if not os.path.exists(dest_path):
+                dest_path = RemoteIO.get_file(full_path, dest_path)
+
+            final_path = dest_path
+            self.remote_scene_paths.append(dest_path)
         else:
             final_path = full_path
 
