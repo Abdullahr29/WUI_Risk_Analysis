@@ -1,6 +1,8 @@
 # WUI Risk Analysis
 
-Pipeline to analyse wildfire risk at the wildland–urban interface (WUI) using high-resolution satellite imagery. The project combines automated segmentation, polygon extraction, fuel classification, and damage prediction workflows to produce geospatial layers that can be mapped, visualized, and exported for downstream risk assessment.
+Pipeline to analyse wildfire risk at the wildland–urban interface (WUI) using high-resolution satellite imagery. The project combines automated segmentation, polygon extraction, fuel classification, and damage prediction workflows to produce geospatial layers that can be mapped, visualized, and exported for downstream risk assessment. 
+
+This is still a Work In Progress.
 
 ## Highlights
 - **Automatic polygon extraction:** Tiles each scene and runs the SAM2 mask generator to create cleaned building and land-cover polygons that can be exported for mapping or further analysis. 
