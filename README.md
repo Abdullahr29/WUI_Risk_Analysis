@@ -4,10 +4,7 @@ Pipeline to analyse wildfire risk at the wildland–urban interface (WUI) using 
 
 This is still a Work In Progress.
 
-## Highlights
-- **Automatic polygon extraction:** Tiles each scene and runs the SAM2 mask generator to create cleaned building and land-cover polygons that can be exported for mapping or further analysis. 
-- **Data loading and labeling helpers:** Utility functions load xBD scenes, normalize imagery, and expose consistent class labels for vegetation, structures, and damage states. 
-- **Notebook-driven experiments:** Jupyter notebooks cover preprocessing, segmentation, classification, shadow handling, and SAM experimentation for rapid iteration on new datasets.
+**Automatic polygon extraction:** Tiles each scene and runs the SAM2 mask generator to create cleaned building and land-cover polygons that can be exported for classification, mapping or further analysis.
 
 ## Repository layout
 - `Data/` – Source CSVs and preprocessed imagery references (e.g., `xBD_WUI_Analysis.csv`, `maxar_data.pkl`).
@@ -35,9 +32,8 @@ This is still a Work In Progress.
    Open the notebooks in `Notebooks/` to run preprocessing, segmentation, and classification pipelines end-to-end.
 
 ## Data and configuration
-- Scene metadata is read from `Data/xBD_WUI_Analysis.csv`; update this file when adding new scenes or labels.
-- Intermediate outputs and cached tiles should be written to `Temporary_Files/` to keep source data clean.
-- If running on remote storage, adjust paths in `config.toml` to point to your data root (see `Utils/image_utils.py` for path resolution logic). 【F:Utils/image_utils.py†L23-L160】
+- Scene metadata is read from `Data/xBD_WUI_Analysis.csv`.
+- If running on remote storage, adjust paths in `config.toml` to point to your data root (see `Utils/image_utils.py` for path resolution logic). 
 
 ## Initial Results
 - Segmentation of xBD imagery
