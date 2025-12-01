@@ -37,10 +37,10 @@ Pipeline to analyse wildfire risk at the wildland–urban interface (WUI) using 
 - Intermediate outputs and cached tiles should be written to `Temporary_Files/` to keep source data clean.
 - If running on remote storage, adjust paths in `config.toml` to point to your data root (see `Utils/image_utils.py` for path resolution logic). 【F:Utils/image_utils.py†L23-L160】
 
-## Visual assets
-- Add overview diagrams, model architecture sketches, or workflow summaries to `Figures/`. Reference them directly in this README, for example:
-  ![Segmentation workflow](Figures/segmentation_workflow.png)
+## Initial Results
+- Segmentation of xBD imagery
+  ![Segmentation workflow](Figures/xBD_Analysis.png)
   
-- Include before/after examples of segmentation or classification outputs using inline images:
-  ![Example pre/post imagery with extracted polygons](Figures/example_segmentation.png)
+- Classification of xBD imagery
+  ![Example pre/post imagery with extracted polygons](Figures/xBD_Classification.png)
   
